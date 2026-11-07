@@ -496,9 +496,21 @@ def main():
     disconnected = {r["table"] for r in csv.DictReader(open(os.path.join(out, "disconnected_tables.csv"),
                                                             encoding="utf-8"))}
     table_info = {t["table"]: t for t in tables}
+    one_side, many_side_t = set(), set()
+    for r in rels:
+        for tbl, card in ((r["from_table"], r["from_cardinality"]), (r["to_table"], r["to_cardinality"])):
+            (many_side_t if card == "many" else one_side).add(tbl)
+
+    def is_dimension(name):
+        if re.match(r"(?i)(fact|fct)[_\s]", name):
+            return False
+        return bool(re.match(r"(?i)dim[_\s]|dim[A-Z]", name)
+                    or re.search(r"(?i)(^|[_\s])(date|calendar|period|time)s?([_\s]|$)", name)
+                    or (name in one_side and name not in many_side_t))
+
     aux_tables = {t["table"] for t in tables
                   if t.get("source_class") in ("calculated_table", "entered_data", "calculation_group")
-                  or re.search(r"(?i)\b(date|calendar|period|time)\b", t["table"])}
+                  or is_dimension(t["table"])}
 
     measures = {}
     for r in recs:
@@ -825,6 +837,24 @@ def main():
             "notes": "; ".join(notes),
         })
 
+    # Fact families: aggregate variants of one underlying fact share a name prefix.
+    # Tokens that recur after the third position across several fact names (IL, NONIL, CS, AsOf, Agg...)
+    # mark where the variant part of the name starts.
+    def name_tokens(n):
+        return [t for t in re.split(r"[_\s]+", n) if t]
+    pos_count = Counter()
+    for r in fact_rows:
+        for tok in set(name_tokens(r["table"])[3:]):
+            pos_count[tok.lower()] += 1
+    variant_toks = {t for t, c in pos_count.items() if c >= 3} | {"agg", "il", "nonil", "asof"}
+    families_f = defaultdict(list)
+    for r in fact_rows:
+        toks = name_tokens(r["table"])
+        cut = next((i for i in range(2, len(toks)) if toks[i].lower() in variant_toks), len(toks))
+        fam = "_".join(toks[:cut])
+        r["fact_family"] = fam
+        families_f[fam].append(r)
+
     # ---------------------------------------------------------------------------------------
     # Candidate base metrics (to help build base_metrics.txt)
     # ---------------------------------------------------------------------------------------
@@ -854,7 +884,7 @@ def main():
     write("base_metrics_report.csv", base_rows, ["base_metric", "domain", "kind", "numerator_tables",
                                                  "denominator_tables", "cross_fact_ratio", "n_variants",
                                                  "flags", "components_not_in_list", "dax"])
-    write("fact_tables.csv", fact_rows, ["table", "databricks_source", "source_class", "n_base_metrics",
+    write("fact_tables.csv", fact_rows, ["table", "fact_family", "databricks_source", "source_class", "n_base_metrics",
                                          "base_metrics", "relationship_columns", "candidate_key_columns",
                                          "grain_key", "date_column", "notes"])
     write("candidate_base_metrics.csv", cand_rows, ["measure", "home_table", "display_folder", "hidden",
@@ -873,7 +903,8 @@ def main():
           (f", **{len(missing_bases)} not found in the model** (check spelling)" if missing_bases else ""),
           "- Roles: " + ", ".join(f"{k or 'none'} {v}" for k, v in role_counts.most_common()),
           "- Status: " + ", ".join(f"{k} {v}" for k, v in status_counts.most_common()),
-          f"- Fact tables used by the base metrics: **{len(fact_rows)}**", ""]
+          f"- Fact tables used by the base metrics: **{len(fact_rows)}**, in **{len(families_f)}** families "
+          "(aggregate variants of the same underlying fact grouped together)", ""]
     if not bases:
         L += ["> No base metric list was given. See **candidate_base_metrics.csv**: measures that aggregate "
               "columns directly or are simple ratios, sorted by how many other measures use them. Pick your "
@@ -889,6 +920,18 @@ def main():
                      f"{r['denominator_tables']} | {'**yes**' if r['cross_fact_ratio'] else ''} | {r['n_variants']} |")
         L += ["", "**Cross-fact** ratios (numerator and denominator from different fact tables, like PMPM) need a "
               "shared-grain view or a trusted query in Databricks.", ""]
+    if families_f:
+        L += ["## Fact families", "",
+              "Aggregate tables that are variants of one underlying fact (IL/NONIL splits, member tenure, as-of, "
+              "service category...). Build one metric view per family on the detail table the aggregates come from; "
+              "use the aggregate tables only to reconcile against.", "",
+              "| Family | Tables | Variants in the names | Base metrics using it |", "|---|---|---|---|"]
+        for fam, rs in sorted(families_f.items(), key=lambda x: (-len(x[1]), x[0])):
+            extra = sorted({t for r in rs for t in name_tokens(r["table"])[len(name_tokens(fam)):]},
+                           key=str.lower)
+            users = sorted({b for r in rs for b in r["base_metrics"].split(";") if b})
+            L.append(f"| {fam} | {len(rs)} | {', '.join(extra) or '—'} | {len(users)} |")
+        L += [""]
     if fact_rows:
         L += ["## Fact tables in scope", "",
               "| Table | Databricks source | Base metrics using it | Relationship columns | Candidate key columns | Notes |",
