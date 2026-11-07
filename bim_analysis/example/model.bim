@@ -1,0 +1,475 @@
+﻿{
+  "name": "Claims Model",
+  "compatibilityLevel": 1567,
+  "model": {
+    "culture": "en-US",
+    "tables": [
+      {
+        "name": "Pharmacy Claims",
+        "columns": [
+          {
+            "name": "Claim ID",
+            "dataType": "string",
+            "sourceColumn": "Claim ID"
+          },
+          {
+            "name": "line_number",
+            "dataType": "int64",
+            "sourceColumn": "line_number"
+          },
+          {
+            "name": "member_id",
+            "dataType": "string",
+            "sourceColumn": "member_id",
+            "isHidden": true
+          },
+          {
+            "name": "plan_id",
+            "dataType": "string",
+            "sourceColumn": "plan_id"
+          },
+          {
+            "name": "fill_date",
+            "dataType": "dateTime",
+            "sourceColumn": "fill_date",
+            "variations": [
+              {
+                "name": "Variation",
+                "relationship": "abc",
+                "defaultHierarchy": {
+                  "table": "LocalDateTable_1",
+                  "hierarchy": "Date Hierarchy"
+                }
+              }
+            ]
+          },
+          {
+            "name": "Paid Amount",
+            "dataType": "decimal",
+            "sourceColumn": "Paid Amount"
+          },
+          {
+            "name": "is_generic",
+            "dataType": "boolean",
+            "sourceColumn": "is_generic"
+          },
+          {
+            "name": "Paid Band",
+            "type": "calculated",
+            "dataType": "string",
+            "expression": "IF('Pharmacy Claims'[Paid Amount] > 100, \"High\", \"Low\")"
+          },
+          {
+            "name": "RowNumber-2662979B",
+            "type": "rowNumber",
+            "dataType": "int64",
+            "isHidden": true
+          }
+        ],
+        "partitions": [
+          {
+            "name": "p",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": "let\n    Source = Databricks.Catalogs(\"adb-123.azuredatabricks.net\", \"/sql/1.0/warehouses/abc\", [Catalog=null, Database=null]),\n    cat = Source{[Name=CatalogName,Kind=\"Database\"]}[Data],\n    sch = cat{[Name=\"pharmacy\",Kind=\"Schema\"]}[Data],\n    tbl = sch{[Name=\"fact_rx_claims\",Kind=\"Table\"]}[Data],\n    #\"Renamed Columns\" = Table.RenameColumns(tbl,{{\"paid_amt\", \"Paid Amount\"}, {\"claim_id\", \"Claim ID\"}}),\n    #\"Kept First Rows\" = Table.FirstN(#\"Renamed Columns\", 10000)\nin\n    #\"Kept First Rows\""
+            }
+          }
+        ],
+        "measures": [
+          {
+            "name": "Paid",
+            "expression": "SUM('Pharmacy Claims'[Paid Amount])",
+            "formatString": "\\$#,0.00",
+            "displayFolder": "Cost"
+          },
+          {
+            "name": "Scripts",
+            "expression": "COUNTROWS('Pharmacy Claims')"
+          },
+          {
+            "name": "Unique Members",
+            "expression": "DISTINCTCOUNT('Pharmacy Claims'[member_id])"
+          },
+          {
+            "name": "Generic Scripts",
+            "expression": [
+              "CALCULATE(",
+              "    [Scripts], // only generics",
+              "    'Pharmacy Claims'[is_generic] = TRUE()",
+              ")"
+            ]
+          },
+          {
+            "name": "Generic Dispensing Rate",
+            "expression": [
+              "VAR g = [Generic Scripts] -- numerator",
+              "VAR t = [Scripts]",
+              "RETURN",
+              "    g / t"
+            ]
+          },
+          {
+            "name": "PMPM",
+            "expression": "DIVIDE([Paid], [Member Months])",
+            "description": "Paid per member per month"
+          },
+          {
+            "name": "PMPM Prior",
+            "expression": "CALCULATE([PMPM], SAMEPERIODLASTYEAR('Date'[Date]))"
+          },
+          {
+            "name": "PMPM Change",
+            "expression": "[PMPM] - [PMPM Prior]"
+          },
+          {
+            "name": "PMPM Change %",
+            "expression": "DIVIDE([PMPM Change], [PMPM Prior])"
+          },
+          {
+            "name": "Paid YTD",
+            "expression": "TOTALYTD([Paid], 'Date'[Date])"
+          },
+          {
+            "name": "Paid R12",
+            "expression": "CALCULATE([Paid], DATESINPERIOD('Date'[Date], MAX('Date'[Date]), -12, MONTH))"
+          },
+          {
+            "name": "Current Paid",
+            "expression": "CALCULATE([Paid], 'Period'[Window] = \"Current\")"
+          },
+          {
+            "name": "Share of Paid",
+            "expression": "DIVIDE([Paid], CALCULATE([Paid], ALLSELECTED('Pharmacy Claims')))"
+          },
+          {
+            "name": "Selected Metric",
+            "expression": "SWITCH(SELECTEDVALUE('Metric Selector'[Metric]), \"PMPM\", [PMPM], \"Paid\", [Paid], BLANK())"
+          },
+          {
+            "name": "KPI Color",
+            "expression": "IF([PMPM Change] > 0, \"#D64550\", \"#2E8B57\")"
+          },
+          {
+            "name": "Avg Paid per Member",
+            "expression": "AVERAGEX(VALUES('Pharmacy Claims'[member_id]), [Paid])"
+          },
+          {
+            "name": "Broken Ref",
+            "expression": "[Does Not Exist] * 2"
+          },
+          {
+            "name": "Paid / Script",
+            "expression": "DIVIDE([Paid], [Scripts]) // cost per script"
+          },
+          {
+            "name": "_Helper Paid Base",
+            "expression": "SUMX('Pharmacy Claims', 'Pharmacy Claims'[Paid Amount] * 1)",
+            "isHidden": true
+          }
+        ]
+      },
+      {
+        "name": "Eligibility",
+        "columns": [
+          {
+            "name": "member_id",
+            "dataType": "string",
+            "sourceColumn": "member_id"
+          },
+          {
+            "name": "elig_month",
+            "dataType": "dateTime",
+            "sourceColumn": "elig_month"
+          },
+          {
+            "name": "member_months",
+            "dataType": "decimal",
+            "sourceColumn": "member_months"
+          },
+          {
+            "name": "plan_id",
+            "dataType": "string",
+            "sourceColumn": "plan_id"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "p",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": [
+                "let",
+                "    Source = Databricks.Catalogs(\"adb-123.azuredatabricks.net\", \"/sql/1.0/warehouses/abc\", [Catalog=null, Database=null]),",
+                "    cat = Source{[Name=CatalogName,Kind=\"Database\"]}[Data],",
+                "    sch = cat{[Name=\"common\",Kind=\"Schema\"]}[Data],",
+                "    tbl = sch{[Name=\"fact_eligibility\",Kind=\"Table\"]}[Data],",
+                "    #\"Filtered Rows\" = Table.SelectRows(tbl, each [is_test] = false),",
+                "    #\"Kept First Rows\" = Table.FirstN(#\"Filtered Rows\", RowLimit)",
+                "in",
+                "    #\"Kept First Rows\""
+              ]
+            }
+          }
+        ],
+        "measures": [
+          {
+            "name": "Member Months",
+            "expression": "SUM(Eligibility[member_months])"
+          }
+        ]
+      },
+      {
+        "name": "Member",
+        "columns": [
+          {
+            "name": "member_id",
+            "dataType": "string",
+            "sourceColumn": "member_id"
+          },
+          {
+            "name": "Region",
+            "dataType": "string",
+            "sourceColumn": "region"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "p",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": "let\n    Source = Databricks.Catalogs(\"adb-123.azuredatabricks.net\", \"/sql/1.0/warehouses/abc\", [Catalog=null, Database=null]),\n    cat = Source{[Name=CatalogName,Kind=\"Database\"]}[Data],\n    sch = cat{[Name=\"pharmacy\",Kind=\"Schema\"]}[Data],\n    tbl = sch{[Name=\"dim_member\",Kind=\"Table\"]}[Data]\nin\n    tbl"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Plan",
+        "columns": [
+          {
+            "name": "plan_id",
+            "dataType": "string",
+            "sourceColumn": "plan_id"
+          },
+          {
+            "name": "plan_name",
+            "dataType": "string",
+            "sourceColumn": "plan_name"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "p",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": "let\n    Source = Databricks.Catalogs(\"adb-123.azuredatabricks.net\", \"/sql/1.0/warehouses/abc\", null),\n    q = Value.NativeQuery(Source{[Name=\"gold\",Kind=\"Database\"]}[Data], \"SELECT plan_id, plan_name FROM gold.common.dim_plan WHERE active = \"\"Y\"\" LIMIT 5000\", null, [EnableFolding=true])\nin\n    q"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Date",
+        "columns": [
+          {
+            "name": "Date",
+            "dataType": "dateTime",
+            "type": "calculatedTableColumn",
+            "sourceColumn": "[Date]",
+            "isKey": true
+          }
+        ],
+        "partitions": [
+          {
+            "name": "Date",
+            "mode": "import",
+            "source": {
+              "type": "calculated",
+              "expression": "CALENDAR(DATE(2020,1,1), DATE(2027,12,31))"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Metric Selector",
+        "columns": [
+          {
+            "name": "Metric",
+            "dataType": "string",
+            "sourceColumn": "Metric"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "p",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": "let\n    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText(\"i45W\", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [Metric = _t])\nin\n    Source"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Period",
+        "columns": [
+          {
+            "name": "Window",
+            "dataType": "string",
+            "sourceColumn": "Window"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "p",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": "let\n    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText(\"i45W\", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [Metric = _t])\nin\n    Source"
+            }
+          }
+        ]
+      },
+      {
+        "name": "LocalDateTable_1",
+        "isHidden": true,
+        "showAsVariationsOnly": true,
+        "columns": [
+          {
+            "name": "Date",
+            "dataType": "dateTime",
+            "type": "calculatedTableColumn",
+            "sourceColumn": "[Date]"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "p",
+            "mode": "import",
+            "source": {
+              "type": "calculated",
+              "expression": "Calendar(Date(Year(MIN('Pharmacy Claims'[fill_date])), 1, 1), Date(Year(MAX('Pharmacy Claims'[fill_date])), 12, 31))"
+            }
+          }
+        ],
+        "annotations": [
+          {
+            "name": "__PBI_LocalDateTable",
+            "value": "true"
+          }
+        ]
+      },
+      {
+        "name": "DateTableTemplate_9",
+        "isHidden": true,
+        "isPrivate": true,
+        "columns": [
+          {
+            "name": "Date",
+            "dataType": "dateTime",
+            "type": "calculatedTableColumn",
+            "sourceColumn": "[Date]"
+          }
+        ],
+        "partitions": [
+          {
+            "name": "p",
+            "mode": "import",
+            "source": {
+              "type": "calculated",
+              "expression": "Calendar(Date(2015,1,1), Date(2015,1,1))"
+            }
+          }
+        ],
+        "annotations": [
+          {
+            "name": "__PBI_TemplateDateTable",
+            "value": "true"
+          }
+        ]
+      }
+    ],
+    "relationships": [
+      {
+        "name": "r1",
+        "fromTable": "Pharmacy Claims",
+        "fromColumn": "member_id",
+        "toTable": "Member",
+        "toColumn": "member_id"
+      },
+      {
+        "name": "r2",
+        "fromTable": "Pharmacy Claims",
+        "fromColumn": "plan_id",
+        "toTable": "Plan",
+        "toColumn": "plan_id"
+      },
+      {
+        "name": "r3",
+        "fromTable": "Pharmacy Claims",
+        "fromColumn": "fill_date",
+        "toTable": "Date",
+        "toColumn": "Date"
+      },
+      {
+        "name": "r4",
+        "fromTable": "Eligibility",
+        "fromColumn": "member_id",
+        "toTable": "Member",
+        "toColumn": "member_id",
+        "crossFilteringBehavior": "bothDirections"
+      },
+      {
+        "name": "r5",
+        "fromTable": "Eligibility",
+        "fromColumn": "elig_month",
+        "toTable": "Date",
+        "toColumn": "Date",
+        "isActive": false
+      },
+      {
+        "name": "abc",
+        "fromTable": "Pharmacy Claims",
+        "fromColumn": "fill_date",
+        "toTable": "LocalDateTable_1",
+        "toColumn": "Date",
+        "joinOnDateBehavior": "datePartOnly"
+      },
+      {
+        "name": "r6",
+        "fromTable": "Eligibility",
+        "fromColumn": "plan_id",
+        "toTable": "Plan",
+        "toColumn": "plan_id",
+        "fromCardinality": "many",
+        "toCardinality": "many"
+      }
+    ],
+    "roles": [
+      {
+        "name": "Region East",
+        "modelPermission": "read",
+        "tablePermissions": [
+          {
+            "name": "Member",
+            "filterExpression": "Member[Region] = \"East\""
+          }
+        ]
+      }
+    ],
+    "expressions": [
+      {
+        "name": "CatalogName",
+        "kind": "m",
+        "expression": "\"gold\" meta [IsParameterQuery=true, Type=\"Text\", IsParameterQueryRequired=true]"
+      },
+      {
+        "name": "RowLimit",
+        "kind": "m",
+        "expression": "10000 meta [IsParameterQuery=true, Type=\"Number\", IsParameterQueryRequired=true]"
+      }
+    ]
+  }
+}

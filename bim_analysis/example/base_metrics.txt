@@ -1,0 +1,7 @@
+# domain|base metric name
+pharmacy|Paid
+pharmacy|Scripts
+pharmacy|Unique Members
+pharmacy|PMPM
+pharmacy|Member Months
+pharmacy|Generic Dispensing Rate
