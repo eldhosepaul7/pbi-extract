@@ -416,11 +416,37 @@ VARIANT_NAME_PATTERNS = [
     ("rolling", r"\b(r\d{1,2}m?|rolling|ttm|ltm|l\d{1,2}m|trailing)\b"),
     ("total", r"\btotal\b"),
     ("target", r"\b(target|budget|goal|benchmark)\b"),
+    ("annualized", r"\b(yearly|annual|annualized)\b"),
 ]
 
 
+def split_camel(s):
+    """IPANetPaidAmount -> IPA Net Paid Amount; AdmitsPerKChange -> Admits Per K Change."""
+    s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", s)
+    s = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", s)
+    return s
+
+
+STEM_DROP = {"total", "prior", "current", "previous", "prev", "py", "cy", "ly", "change", "chg", "delta",
+             "variance", "var", "diff", "yoy", "ytd", "qtd", "mtd", "rolling", "ttm", "yearly", "annual",
+             "annualized", "pct", "percent", "growth", "trend", "amount", "count", "%", "$"}
+
+
+def stem(name):
+    """Name with prefixes like Total_/Prior_ and variant words removed: Prior_Claims_Medical -> 'claim medical'."""
+    s = split_camel(name).lower().replace("%", " % ").replace("$", " $ ")
+    out = []
+    for t in re.findall(r"[a-z0-9%$]+", s):
+        if t in STEM_DROP:
+            continue
+        if len(t) > 3 and t.endswith("s") and not t.endswith("ss"):
+            t = t[:-1]
+        out.append(t)
+    return " ".join(out)
+
+
 def name_variants(name):
-    n = re.sub(r"[_\-]+", " ", name.lower())
+    n = re.sub(r"[_\-]+", " ", split_camel(name).lower())
     found = [v for v, pat in VARIANT_NAME_PATTERNS if re.search(pat, n)]
     if "change_pct" in found and "change" in found:
         found.remove("change")
@@ -581,9 +607,14 @@ def main():
                     reasons.append("depends on several base metrics: " + ", ".join(sorted(dep_bases)))
             else:
                 n_name = normalize(name)
+                stem_hits = [b for b in bases if stem(b) and stem(b) == stem(name)]
                 named = sorted([b for b in bases if normalize(b) and normalize(b) in n_name],
                                key=lambda b: -len(b))
-                if named:
+                if len(stem_hits) == 1:
+                    base = stem_hits[0]
+                    status = "review"
+                    reasons.append("matched by name pattern (e.g. Prior_X to Total_X), no dependency on the base metric")
+                elif named:
                     base = named[0]
                     status = "review"
                     reasons.append("matched by name only, no dependency on the base metric")
