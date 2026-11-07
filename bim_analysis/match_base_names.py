@@ -34,7 +34,7 @@ SYNONYMS = {
 }
 VARIANT_WORDS = {"prior", "py", "ly", "previous", "prev", "change", "chg", "delta", "variance", "var", "diff",
                  "yoy", "ytd", "qtd", "mtd", "rolling", "r12", "ttm", "current", "cy", "cur", "growth",
-                 "target", "budget", "trend"}
+                 "target", "budget", "trend", "dq"}
 GENERIC = {"count", "amount", "per", "average", "rate", "number", "%", "day", "month"}
 FILLER = {"the", "of", "and", "total", "sum", "measure", "value", "metric", "kpi", "m", "x"}
 
@@ -67,10 +67,16 @@ def key(name):
 NON_BASE_WORDS = {"selector", "color", "colour", "title", "label", "flag", "icon", "tooltip"}
 
 
+CURRENT_WORDS = {"current", "cur", "cy"}  # the current-window version is the best anchor when no Total_ exists
+
+
 def score(base, measure, domain="", domains=()):
     all_mt = set(tokens(measure))
+    qualifiers = set()
+    for q in re.findall(r"\(([^)]*)\)", measure):  # e.g. (WeightedClaims): a qualifier, not a different metric
+        qualifiers |= set(tokens(q))
     bt = [t for t in tokens(base) if t not in FILLER and t not in domains]
-    mt = [t for t in tokens(measure) if t not in FILLER and t not in domains]
+    mt = [t for t in tokens(re.sub(r"\([^)]*\)", " ", measure)) if t not in FILLER and t not in domains]
     if not bt or not mt:
         return 0.0
     ratio = difflib.SequenceMatcher(None, " ".join(bt), " ".join(mt)).ratio()
@@ -79,8 +85,10 @@ def score(base, measure, domain="", domains=()):
     contained = sum(weight(t) for t in bset & mset) / sum(weight(t) for t in bset)
     extra = sum(weight(t) for t in mset - bset)
     s = 0.4 * ratio + 0.6 * contained - 0.05 * extra
-    if mset & VARIANT_WORDS and not bset & VARIANT_WORDS:
+    if (mset & VARIANT_WORDS) - CURRENT_WORDS and not bset & VARIANT_WORDS:
         s -= 0.25  # base metrics should not be prior/change/YTD versions
+    elif mset & CURRENT_WORDS:
+        s -= 0.03  # Current_X: fine as an anchor, but a plain Total_X wins when both exist
     if mset & NON_BASE_WORDS:
         s -= 0.3   # selectors and formatting measures are not base metrics
     if domain:
