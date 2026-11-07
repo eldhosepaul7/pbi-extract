@@ -41,6 +41,7 @@ FILLER = {"the", "of", "and", "total", "sum", "measure", "value", "metric", "kpi
 
 def split_camel(s):
     """IPANetPaidAmount -> IPA Net Paid Amount; AdmitsPerKChange -> Admits Per K Change."""
+    s = re.sub(r"YoY|MoM|QoQ|WoW", lambda m: " " + m.group(0).capitalize() + " ", s)  # keep YoY as one word
     s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", s)
     s = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", s)
     s = re.sub(r"([A-Za-z])(\d)", r"\1 \2", s)

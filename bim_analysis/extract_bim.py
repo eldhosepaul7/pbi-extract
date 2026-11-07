@@ -224,7 +224,15 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("bim", help="path to model.bim")
     ap.add_argument("--out", default="out", help="output folder (default: out)")
+    ap.add_argument("--mappings", help="CSV with columns pbi_table, databricks_table (catalog.schema.table) "
+                                       "for tables whose source could not be parsed")
     args = ap.parse_args()
+    mappings = {}
+    if args.mappings:
+        with open(args.mappings, encoding="utf-8-sig") as f:
+            for r in csv.DictReader(f):
+                if r.get("pbi_table") and (r.get("databricks_table") or "").strip():
+                    mappings[r["pbi_table"].strip()] = r["databricks_table"].strip()
     os.makedirs(args.out, exist_ok=True)
 
     model = find_model(load_bim(args.bim))
@@ -280,6 +288,14 @@ def main():
                 m_code = text(t["refreshPolicy"].get("sourceExpression"))
             info = parse_source(m_code, params, shared)
             source_expr = m_code
+        if name in mappings:
+            full = mappings[name]
+            parts = full.split(".")
+            info["databricks_source"] = full
+            if len(parts) == 3:
+                info["catalog"], info["schema"], info["table"] = parts
+            if info.get("source_class") in ("unknown", "", "calculated_table", "entered_data", "non_databricks"):
+                info["source_class"] = "mapped"
         is_calc_group = "calculationGroup" in t
         if is_calc_group:
             info["source_class"] = "calculation_group"
@@ -381,6 +397,9 @@ def main():
         f"- Columns: {len(col_rows)}",
         f"- Measures: **{len(measures)}** (expressions kept exactly as written in measures.json)",
         f"- Disconnected tables: {len(disc_rows)}",
+        f"- Tables mapped from --mappings: {sum(1 for r in table_rows if r['table'] in mappings)}"
+        + (f" (not found in the model: {', '.join(sorted(set(mappings) - {r['table'] for r in table_rows}))})"
+           if set(mappings) - {r['table'] for r in table_rows} else ""),
         f"- Row-level security filters: {len(rls_rows)}",
         "", "## Tables by source", "",
         "| Source class | Tables |", "|---|---|",
@@ -389,6 +408,7 @@ def main():
         "**transformed** = Power Query filters, adds columns or merges (that logic must move to gold); "
         "**native_query** = SQL written in Power Query; **calculated_table** = built in DAX; "
         "**entered_data** = typed into Power BI by hand; **non_databricks** = another source; "
+        "**mapped** = source set by hand in --mappings; "
         "**unknown** = could not parse the source.", "",
     ]
     if capped:

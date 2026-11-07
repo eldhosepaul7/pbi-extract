@@ -7,8 +7,9 @@ No Power BI experience is needed. Nothing here reads data from the .pbix, and no
 | Step | Script | Needs | Output you read |
 |---|---|---|---|
 | 1 | `extract_bim.py` | `model.bim` | `out/extract_summary.md` |
-| 2 | (you) | | `base_metrics.txt` |
+| 2 | `list_metrics.py` | step 1 output | `base_metrics_auto.txt` (delete what you don't need) |
 | 3 | `analyze_model.py` | step 1 output + `base_metrics.txt` | `out/analysis.md` |
+| 3b | `find_uc_tables.py` | Databricks CLI sign-in | `table_mappings.csv` for tables without a source |
 | 4 | (you) | | edit `out/fact_tables.csv` |
 | 5 | `grain_checks.py` | Databricks CLI sign-in, a SQL warehouse | `out/grain_checks.md` |
 | 6 | (you + Copilot) | | `out/measure_map.csv` reviewed |
@@ -35,33 +36,41 @@ Open `out/extract_summary.md` and check:
 
 DAX is saved exactly as written, with line breaks, in `measures.json`. Do not open and re-save it in Excel.
 
-## Step 2: Write `base_metrics.txt`
+## Step 2: Build the base metric list
 
-One base metric per line, spelled exactly as in Power BI, optionally with a domain in front:
+The easiest way needs no Power BI knowledge. It builds the list from the measure names themselves:
+
+```
+python list_metrics.py --out out
+```
+
+It groups measures by their core name, so `Total_AllowedAmount_Medical`, `Prior_AllowedAmount_Medical` and `Allowed%Change_Medical` become one metric, "Allowed Amount" (Medical). For each metric it picks the base measure: `Total_X` if one exists, otherwise `Current_X`. It writes:
+
+- `base_metrics_auto.txt`: one line per metric, ready to use. Delete the lines for metrics business users don't need. Lines starting with `#` are set aside: helpers, data-quality (`_DQ`) measures, and families that have only variants.
+- `out/metric_inventory.csv`: every metric with its base measure, its variants and all its measures. This is useful for reviewing the list with the business.
+
+Selector and formatting measures (`MetricSelector_*`, `ShowSlicer_*`, colors) are left out automatically.
+
+The file format, if you edit by hand, is one base metric per line, spelled exactly as in Power BI, with an optional domain in front:
 
 ```
 # domain|measure name
-pharmacy|Paid
-pharmacy|PMPM
-medical|Admits per 1000
+Medical|Total_AllowedAmount_Medical
+Pharmacy|Current_AllowedPerScript(WeightedClaims)_Pharmacy
 ```
 
-A base metric is one business quantity: Paid, Scripts, Member Months, PMPM. Its Prior, Change, Change %, YoY, YTD and rolling versions are variants, not base metrics.
-
-**The names must be the exact measure names inside Power BI**, which often differ from business names ("Total_Allowed_Amt" rather than "Allowed Amount"). If step 3 reports "Base metrics not found", run the name matcher. It finds the closest real measure names for each line of your list:
+**If you start from a business list instead** (names like "Allowed Amount"), `match_base_names.py` finds the closest real measure for each name:
 
 ```
-python match_base_names.py --out out --base-metrics base_metrics.txt
+python match_base_names.py --out out --base-metrics my_business_list.txt
 ```
 
-It writes `base_metrics_suggested.txt` (your list rewritten with real names) and `out/base_name_matches.csv` (the top 5 candidates per name, with each one's DAX and how many measures use it). Lines marked `# CHECK` are ambiguous or have no good match: pick the right measure from the CSV, delete the note, then save the file as `base_metrics.txt`. When two candidates look alike, such as `_Net Paid Amount` and `Total_Net_Paid_Amt`, prefer the one with the simpler DAX that more measures use: that's usually the true base.
-
-If you don't have the list yet, run step 3 without `--base-metrics`. It writes `out/candidate_base_metrics.csv`: measures that aggregate columns directly or are simple ratios, sorted by how many other measures use them. Pick from the top of that list, then rerun with your file.
+It writes `base_metrics_suggested.txt`. Resolve the lines marked `# CHECK` using `out/base_name_matches.csv`, which shows the top 5 candidates per name with their DAX.
 
 ## Step 3: Analyze
 
 ```
-python analyze_model.py --out out --base-metrics base_metrics.txt
+python analyze_model.py --out out --base-metrics base_metrics_auto.txt
 ```
 
 Open `out/analysis.md`. Its sections:
@@ -86,11 +95,54 @@ Open `out/analysis.md`. Its sections:
 
 The **status** column is `certain`, `review` or `uncertain`, with the reasons alongside.
 
+## Step 3b: Map tables that have no Databricks source
+
+Some tables show `—` as their Databricks source in "Fact tables in scope", with source class `unknown`. That usually means Power Query loads them in a way the parser can't read, such as through a custom function. Let Unity Catalog find them:
+
+```
+python find_uc_tables.py --out out --dry-run
+python find_uc_tables.py --out out --warehouse-id <WAREHOUSE_ID> --profile <PROFILE> --catalogs gold
+```
+
+It searches Unity Catalog by table name, then confirms each candidate by comparing column names. It reads metadata only (`information_schema`), never data. By default it only looks at the tables your base metrics use and the tables they join to; add `--all` for every table. `--catalogs` limits the search, which makes it faster.
+
+Open `table_mappings_suggested.csv`:
+
+- **confident**: the name and columns match. Keep it.
+- **CHECK: columns differ**: probably the right table, with Power Query renaming or computing columns. That logic must be recreated in a gold view.
+- **CHECK: several similar tables**: pick the right one from `out/uc_table_candidates.csv`.
+- **NOT FOUND**: fill in `catalog.schema.table` by hand, or ask whoever owns the pipeline.
+
+Save it as `table_mappings.csv`, then rerun:
+
+```
+python extract_bim.py model.bim --out out --mappings table_mappings.csv
+python analyze_model.py --out out --base-metrics base_metrics_auto.txt
+```
+
+Some tables have no Unity Catalog table by design. `out/unmapped_tables.md` lists them with what to do:
+
+| Kind | What to do |
+|---|---|
+| Calculated (DAX) date table | Use your gold date dimension |
+| Calculated summary table used by metrics | Rebuild as a gold view |
+| Selector or parameter table (entered data) | Not needed: the chat question replaces it |
+| Mapping or threshold table (entered data) | Land it in the lakehouse as a small table |
+| Excel, SharePoint or another database | Land it in the lakehouse if metrics need it |
+
+**`_Agg` tables are pre-aggregated.** Map them so parity can be checked against them, but build the metric views on the detail tables they are computed from. Unity Catalog lineage shows those:
+
+```sql
+SELECT DISTINCT target_table_full_name, source_table_full_name
+FROM system.access.table_lineage
+WHERE lower(target_table_full_name) LIKE '%agg'
+```
+
 ## Step 4: Confirm the grain key of each fact table
 
 Open `out/fact_tables.csv`. For each table, check two columns:
 
-- **grain_key**: the columns that should identify exactly one row, separated by `;`. It is pre-filled with a guess. Claim lines are usually claim ID + line number. A claim header is the claim ID alone. Eligibility is usually member + month.
+- **grain_key**: the columns that should identify exactly one row, separated by `;`. It is pre-filled with a guess. Claim lines are usually claim ID + line number. A claim header is the claim ID alone. Eligibility is usually member + month. For `_Agg` tables it is every column the table was grouped by.
 - **date_column**: the main date, used to limit scans to recent months.
 
 **Relationship columns** are foreign keys: they show which dimensions a fact links to, not what makes a row unique.

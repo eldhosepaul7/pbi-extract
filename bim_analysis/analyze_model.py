@@ -429,6 +429,7 @@ VARIANT_NAME_PATTERNS = [
 
 def split_camel(s):
     """IPANetPaidAmount -> IPA Net Paid Amount; AdmitsPerKChange -> Admits Per K Change."""
+    s = re.sub(r"YoY|MoM|QoQ|WoW", lambda m: " " + m.group(0).capitalize() + " ", s)  # keep YoY as one word
     s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", s)
     s = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", s)
     return s
@@ -785,7 +786,14 @@ def main():
         keys = [c["column"] for c in cols_t if c["type"] == "data" and key_re.search(c["column"])]
         own_keys = [k for k in keys if k not in fks]
         keys = own_keys + [k for k in keys if k in fks]
-        if own_keys:
+        measure_like = re.compile(r"(?i)(count|cnt|amount|amt|paid|allowed|units?|days|sum|total|qty|quantity|"
+                                  r"cost|value|score|member_?months?)$")
+        if re.search(r"(?i)(^|_)agg(_|$)|aggregate", t):
+            guess = [c["column"] for c in cols_t if c["type"] == "data"
+                     and (c["data_type"] == "dateTime" or not measure_like.search(c["column"]))]
+            notes_guess = ("aggregate table: grain_key pre-filled with all its group-by columns (everything that "
+                           "is not a measure-like column): confirm it")
+        elif own_keys:
             guess = own_keys[:3]
             notes_guess = "grain_key is a guess from column names: confirm it"
         else:
