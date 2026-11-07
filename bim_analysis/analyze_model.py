@@ -430,6 +430,7 @@ VARIANT_NAME_PATTERNS = [
 def split_camel(s):
     """IPANetPaidAmount -> IPA Net Paid Amount; AdmitsPerKChange -> Admits Per K Change."""
     s = re.sub(r"YoY|MoM|QoQ|WoW", lambda m: " " + m.group(0).capitalize() + " ", s)  # keep YoY as one word
+    s = re.sub(r"([A-Z]{2,})(PMPM|PMPY|PKPY|ALOS)", r"\1 \2", s)  # PROFPMPMAllowed -> PROF PMPMAllowed
     s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", s)
     s = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", s)
     return s
@@ -848,10 +849,16 @@ def main():
             pos_count[tok.lower()] += 1
     variant_toks = {t for t, c in pos_count.items() if c >= 3} | {"agg", "il", "nonil", "asof"}
     families_f = defaultdict(list)
+    fam_display = {}
     for r in fact_rows:
         toks = name_tokens(r["table"])
         cut = next((i for i in range(2, len(toks)) if toks[i].lower() in variant_toks), len(toks))
         fam = "_".join(toks[:cut])
+        fam_key = fam.lower()
+        if fam_key in fam_display:   # same family in different casing (MemberMonth / Membermonth)
+            fam = fam_display[fam_key]
+        else:
+            fam_display[fam_key] = fam
         r["fact_family"] = fam
         families_f[fam].append(r)
 

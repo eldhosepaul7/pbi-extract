@@ -10,6 +10,7 @@ No Power BI experience is needed. Nothing here reads data from the .pbix, and no
 | 2 | `list_metrics.py` | step 1 output | `base_metrics_auto.txt` (delete what you don't need) |
 | 3 | `analyze_model.py` | step 1 output + `base_metrics.txt` | `out/analysis.md` |
 | 3b | `find_uc_tables.py` | Databricks CLI sign-in | `table_mappings.csv` for tables without a source |
+| 3c | `family_sources.py` | Databricks CLI sign-in | `out/fact_family_sources.md` |
 | 4 | (you) | | edit `out/fact_tables.csv` |
 | 5 | `grain_checks.py` | Databricks CLI sign-in, a SQL warehouse | `out/grain_checks.md` |
 | 6 | (you + Copilot) | | `out/measure_map.csv` reviewed |
@@ -137,6 +138,23 @@ SELECT DISTINCT target_table_full_name, source_table_full_name
 FROM system.access.table_lineage
 WHERE lower(target_table_full_name) LIKE '%agg'
 ```
+
+## Step 3c: Find the detail table behind each fact family
+
+`analysis.md` groups aggregate tables into **fact families**, e.g. `Fact_MedClaim_IPA` with its IL/NONIL, CS, DRG_CC and MemberTenure_AsOf variants. Build one metric view per family on the detail table the aggregates are computed from. Unity Catalog lineage finds it:
+
+```
+python family_sources.py --out out --dry-run
+python family_sources.py --out out --warehouse-id <WAREHOUSE_ID> --profile <PROFILE>
+```
+
+Open `out/fact_family_sources.md`. For each family it lists the upstream tables, ranked by **coverage**: how many of the family's aggregate tables derive from each one.
+
+- **The top `detail` table at 100% coverage** is usually the metric view's source.
+- **Detail tables with partial coverage** (e.g. a member tenure snapshot used only by the MemberTenure aggregates) supply attributes the metric view must also carry, through a join.
+- **No lineage found** means the tables weren't written by Unity Catalog-enabled compute in the last year. Check the job that builds them instead.
+
+Map tables without a Databricks source first (step 3b), since lineage starts from those names.
 
 ## Step 4: Confirm the grain key of each fact table
 
