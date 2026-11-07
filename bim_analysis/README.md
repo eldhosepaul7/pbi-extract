@@ -48,6 +48,14 @@ medical|Admits per 1000
 
 A base metric is one business quantity: Paid, Scripts, Member Months, PMPM. Its Prior, Change, Change %, YoY, YTD and rolling versions are variants, not base metrics.
 
+**The names must be the exact measure names inside Power BI**, which often differ from business names ("Total_Allowed_Amt" rather than "Allowed Amount"). If step 3 reports "Base metrics not found", run the name matcher. It finds the closest real measure names for each line of your list:
+
+```
+python match_base_names.py --out out --base-metrics base_metrics.txt
+```
+
+It writes `base_metrics_suggested.txt` (your list rewritten with real names) and `out/base_name_matches.csv` (the top 5 candidates per name, with each one's DAX and how many measures use it). Lines marked `# CHECK` are ambiguous or have no good match: pick the right measure from the CSV, delete the note, then save the file as `base_metrics.txt`. When two candidates look alike, such as `_Net Paid Amount` and `Total_Net_Paid_Amt`, prefer the one with the simpler DAX that more measures use: that's usually the true base.
+
 If you don't have the list yet, run step 3 without `--base-metrics`. It writes `out/candidate_base_metrics.csv`: measures that aggregate columns directly or are simple ratios, sorted by how many other measures use them. Pick from the top of that list, then rerun with your file.
 
 ## Step 3: Analyze

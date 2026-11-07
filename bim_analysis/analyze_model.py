@@ -525,7 +525,7 @@ def main():
     if args.base_metrics:
         lookup = {normalize(n): n for n in measures}
         for line in open(args.base_metrics, encoding="utf-8-sig"):
-            line = line.strip()
+            line = re.sub(r"\s{2,}#.*$", "", line).strip()  # drop inline "    # CHECK ..." notes
             if not line or line.startswith("#"):
                 continue
             domain, _, name = line.rpartition("|")
