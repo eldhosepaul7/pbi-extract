@@ -249,16 +249,21 @@ def walk_items(items, visit):
 def refs_in(items, ctx):
     """Collect column refs, measure refs and table refs in a sequence of items."""
     cols, meas, tabs, unresolved = set(), set(), set(), set()
+    qualifier_only = set()
 
     def visit(it, prev):
         if isinstance(it, Tok):
             if it.kind == "bracket":
                 name = unq_bracket(it.val)
-                if prev is not None and isinstance(prev, Tok) and prev.kind in ("qtable", "ident") \
-                        and unq_table(prev).lower() in ctx["tables_lower"]:
+                qualified = (prev is not None and isinstance(prev, Tok) and prev.kind in ("qtable", "ident")
+                             and unq_table(prev).lower() in ctx["tables_lower"])
+                if qualified and ((unq_table(prev).lower(), name.lower()) in ctx["cols_lower"]
+                                  or name.lower() not in ctx["measures_lower"]):
                     cols.add((ctx["tables_lower"][unq_table(prev).lower()], name))
-                elif name in ctx["measures"]:
-                    meas.add(name)
+                elif name.lower() in ctx["measures_lower"]:  # DAX names are case-insensitive
+                    meas.add(ctx["measures_lower"][name.lower()])
+                    if qualified:
+                        qualifier_only.add(ctx["tables_lower"][unq_table(prev).lower()])
                 elif name.lower() in ctx["column_names_lower"]:
                     cols.add((None, name))
                 else:
@@ -269,7 +274,7 @@ def refs_in(items, ctx):
                     tabs.add(ctx["tables_lower"][key])
 
     walk_items(items, visit)
-    # A table token directly before a bracket is a column qualifier, not a table reference on its own.
+    tabs -= {t for t in qualifier_only if not any(c[0] == t for c in cols)}
     return cols, meas, tabs, unresolved
 
 
@@ -349,6 +354,8 @@ def ratio_parts(items):
         c = items[0]
         if c.name == "DIVIDE" and len(c.args) >= 2:
             return c.args[0], c.args[1]
+        if c.name in ("CALCULATE", "KEEPFILTERS") and c.args:
+            return ratio_parts(c.args[0])
         if c.name in ("IF", "IFERROR", "COALESCE") and c.args:
             for a in c.args[1:]:
                 r = ratio_parts(a)
@@ -488,6 +495,9 @@ def main():
     disconnected = {r["table"] for r in csv.DictReader(open(os.path.join(out, "disconnected_tables.csv"),
                                                             encoding="utf-8"))}
     table_info = {t["table"]: t for t in tables}
+    aux_tables = {t["table"] for t in tables
+                  if t.get("source_class") in ("calculated_table", "entered_data", "calculation_group")
+                  or re.search(r"(?i)\b(date|calendar|period|time)\b", t["table"])}
 
     measures = {}
     for r in recs:
@@ -495,6 +505,8 @@ def main():
     ctx = {
         "tables_lower": {t["table"].lower(): t["table"] for t in tables},
         "measures": set(measures),
+        "measures_lower": {n.lower(): n for n in measures},
+        "cols_lower": {(c["table"].lower(), c["column"].lower()) for c in columns},
         "column_names_lower": {c["column"].lower() for c in columns},
     }
     for m in measures.values():
@@ -525,7 +537,7 @@ def main():
         ts = set(measures[name].agg_tables)
         for d in closure(name):
             ts |= measures[d].agg_tables
-        return ts
+        return ts - aux_tables
 
     def items_tables(items, m):
         """Tables aggregated by a sub-expression (numerator or denominator), following measure refs."""
@@ -539,7 +551,7 @@ def main():
                     tmp.agg_tables.update(first_table(it.args[0], ctx))
         walk_items(expanded, visit)
         _, meas, _, _ = refs_in(expanded, ctx)
-        ts = set(tmp.agg_tables)
+        ts = set(tmp.agg_tables) - aux_tables
         for d in meas:
             if d in measures:
                 ts |= agg_tables_closure(d)
@@ -581,6 +593,9 @@ def main():
             reasons.append("parse_error: " + m.parse_error)
         elif name in bases:
             role, base, variant = "base", name, "base"
+        elif re.search(r"(?i)selector|slicer", name):
+            role = "selector"
+            reasons.append("named like a slicer or metric selector")
         elif "SWITCH" in m.functions and uses_disconnected and (m.functions & SELECTOR_READERS):
             role = "selector"
             reasons.append("switches on a selector table: " + ", ".join(sorted(uses_disconnected)))
@@ -590,7 +605,14 @@ def main():
             reasons.append("returns colors or formatting text, or is named like a visual helper")
         else:
             dep_bases = (deps & bases)
-            if len(dep_bases) == 1:
+            stem_hits = [b for b in bases if stem(b) and stem(b) == stem(name)]
+            if len(stem_hits) == 1:
+                base = stem_hits[0]
+                if base not in deps:
+                    status = "review"
+                    reasons.append("matched by name pattern (e.g. Prior_X to Current_X), "
+                                   "no direct dependency on the base metric")
+            elif len(dep_bases) == 1:
                 base = next(iter(dep_bases))
             elif len(dep_bases) > 1:
                 n_name = normalize(name)
@@ -604,17 +626,13 @@ def main():
                     status = "review"
                 else:
                     status = "uncertain"
-                    reasons.append("depends on several base metrics: " + ", ".join(sorted(dep_bases)))
+                    reasons.append("depends on several base metrics and no name pattern decides: "
+                                   + ", ".join(sorted(dep_bases)))
             else:
                 n_name = normalize(name)
-                stem_hits = [b for b in bases if stem(b) and stem(b) == stem(name)]
                 named = sorted([b for b in bases if normalize(b) and normalize(b) in n_name],
                                key=lambda b: -len(b))
-                if len(stem_hits) == 1:
-                    base = stem_hits[0]
-                    status = "review"
-                    reasons.append("matched by name pattern (e.g. Prior_X to Total_X), no dependency on the base metric")
-                elif named:
+                if named:
                     base = named[0]
                     status = "review"
                     reasons.append("matched by name only, no dependency on the base metric")
@@ -668,7 +686,7 @@ def main():
             else:
                 role = "unmapped"
                 status = "uncertain" if bases else "review"
-                if bases:
+                if bases and not dep_bases:
                     reasons.append("no base metric in its dependencies or name")
 
         if m.unresolved_refs:
@@ -706,9 +724,11 @@ def main():
         ret = expand_vars(m.return_items or m.tree, m.var_defs)
         rp = ratio_parts(ret)
         kind, num_t, den_t, cross = "", set(), set(), False
+        components = set()
         if rp:
-            num_t, _ = items_tables(rp[0], m)
-            den_t, _ = items_tables(rp[1], m)
+            num_t, num_refs = items_tables(rp[0], m)
+            den_t, den_refs = items_tables(rp[1], m)
+            components = {x for x in (num_refs | den_refs) if x in measures and x not in bases}
             kind = "ratio"
             cross = bool(num_t and den_t and num_t != den_t)
         else:
@@ -736,7 +756,8 @@ def main():
             "base_metric": b, "domain": base_domain.get(b, ""), "kind": kind,
             "numerator_tables": ";".join(sorted(num_t)), "denominator_tables": ";".join(sorted(den_t)),
             "cross_fact_ratio": cross, "n_variants": variant_counts.get(b, 0),
-            "flags": "; ".join(flags), "dax": m.clean.strip(),
+            "flags": "; ".join(flags), "components_not_in_list": ";".join(sorted(components)),
+            "dax": m.clean.strip(),
         })
 
     # ---------------------------------------------------------------------------------------
@@ -824,7 +845,7 @@ def main():
     write("measure_map.csv", rows, list(rows[0].keys()) if rows else ["measure"])
     write("base_metrics_report.csv", base_rows, ["base_metric", "domain", "kind", "numerator_tables",
                                                  "denominator_tables", "cross_fact_ratio", "n_variants",
-                                                 "flags", "dax"])
+                                                 "flags", "components_not_in_list", "dax"])
     write("fact_tables.csv", fact_rows, ["table", "databricks_source", "source_class", "n_base_metrics",
                                          "base_metrics", "relationship_columns", "candidate_key_columns",
                                          "grain_key", "date_column", "notes"])
@@ -870,6 +891,34 @@ def main():
         L += ["", "Relationship columns are foreign keys: they show which dimensions a fact links to, not what makes "
               "a row unique. Before running grain_checks.py, check **grain_key** in fact_tables.csv (pre-filled with a guess: the columns "
               "that should identify one row, separated by ';') and check **date_column**.", ""]
+    comp_users = defaultdict(set)
+    for r in base_rows:
+        for c in filter(None, r["components_not_in_list"].split(";")):
+            comp_users[c].add(r["base_metric"])
+    if comp_users:
+        L += ["## Ratio components missing from your list", "",
+              "Base metrics in your list are ratios built from these measures, which are not in the list. "
+              "Add the ones that are business metrics (e.g. units, scripts) to base_metrics.txt; helpers such as "
+              "a month count can stay out, but note how they are used.", "",
+              "| Component measure | Used by |", "|---|---|"]
+        for c, users in sorted(comp_users.items(), key=lambda x: -len(x[1])):
+            L.append(f"| {c} | {', '.join(sorted(users))} |")
+        L += [""]
+    fam = defaultdict(list)
+    for r in rows:
+        if r["role"] == "unmapped":
+            fam[stem(r["measure"]) or r["measure"]].append(r["measure"])
+    if fam:
+        L += ["## Unmapped measure families", "",
+              "Unmapped measures grouped by name pattern (Total_, Current_, Prior_ and change words removed). "
+              "A family with several measures is usually a metric missing from base_metrics.txt: add its "
+              "Total_ or Current_ measure if business users need it, otherwise it can be left out.", "",
+              "| Family | Measures | Examples |", "|---|---|---|"]
+        for k, ms in sorted(fam.items(), key=lambda x: (-len(x[1]), x[0]))[:40]:
+            L.append(f"| {k} | {len(ms)} | {', '.join(sorted(ms)[:3])}{' …' if len(ms) > 3 else ''} |")
+        if len(fam) > 40:
+            L.append(f"| … {len(fam) - 40} more families | | see measure_map.csv |")
+        L += [""]
     variants = Counter(r["variant_type"] for r in rows if r["role"] == "variant")
     if variants:
         L += ["## Variant types", "", "| Variant type | Measures |", "|---|---|"]
